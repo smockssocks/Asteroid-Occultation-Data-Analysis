@@ -72,3 +72,22 @@ def test_stop_event_kills_transfer(tmp_path):
     results = bd.run_downloads(["20250420", "20250421"], str(tmp_path), bd.DownloadOptions(bbftp=fake, log_file=None),
                                log=lambda _: None, stop_event=stop)
     assert len(results) == 1 and results[0].returncode != 0
+
+
+def test_password_switches_to_interactive_ssh_mode():
+    cmd = bd.build_command("20250420", "/data", bd.DownloadOptions(password="secret"))
+    assert "-s" in cmd and "-S" not in cmd
+    assert "secret" not in " ".join(cmd)
+    assert "secret" not in repr(bd.DownloadOptions(password="secret"))
+
+
+def test_password_reaches_ssh_through_askpass_only(tmp_path):
+    # The fake bbftp calls the askpass helper the way ssh would.
+    fake = _fake_bbftp(tmp_path, 'echo "got: $("$SSH_ASKPASS")"\n')
+    out = tmp_path / "out"
+    lines = []
+    bd.run_downloads(["20250420"], str(out), bd.DownloadOptions(bbftp=fake, password="s3cret"), log=lines.append)
+    assert "got: s3cret" in lines
+    for path in out.rglob("*"):
+        if path.is_file() and path.name != "bbftp_log.txt":
+            assert "s3cret" not in path.read_text()
