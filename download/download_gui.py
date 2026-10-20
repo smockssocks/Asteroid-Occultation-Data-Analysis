@@ -32,6 +32,7 @@ class DownloadApp(ttk.Frame):
         self.worker: threading.Thread | None = None
 
         self.user = tk.StringVar(value=bd.DEFAULT_USER)
+        self.password = tk.StringVar()  # never saved
         self.server = tk.StringVar(value=bd.DEFAULT_SERVER)
         self.remote_root = tk.StringVar(value=bd.DEFAULT_REMOTE_ROOT)
         self.bbftp = tk.StringVar(value=shutil.which("bbftp") or "bbftp")
@@ -59,16 +60,18 @@ class DownloadApp(ttk.Frame):
         conn.grid(row=0, column=0, sticky="ew")
         conn.columnconfigure(1, weight=1)
         self._row(conn, 0, "Username:", self.user)
-        self._row(conn, 1, "Server:", self.server)
-        self._row(conn, 2, "Remote data folder:", self.remote_root)
-        self._row(conn, 3, "bbftp program:", self.bbftp, browse=self._browse_bbftp)
+        self._row(conn, 1, "Password (optional):", self.password, show="\u2022")
+        self._row(conn, 2, "Server:", self.server)
+        self._row(conn, 3, "Remote data folder:", self.remote_root)
+        self._row(conn, 4, "bbftp program:", self.bbftp, browse=self._browse_bbftp)
         opts = ttk.Frame(conn)
-        opts.grid(row=4, column=1, sticky="w")
+        opts.grid(row=5, column=1, sticky="w")
         ttk.Checkbutton(opts, text="SSH batch login (-S, uses your SSH key)", variable=self.ssh_batch).pack(side="left")
         ttk.Checkbutton(opts, text="Verbose (-V)", variable=self.verbose).pack(side="left", padx=10)
         ttk.Label(conn, foreground="gray",
-                  text="No password box: bbftp logs in with the SSH key you set up for the archive.").grid(
-            row=5, column=0, columnspan=3, sticky="w", pady=(4, 0))
+                  text="Leave the password empty if you log in with an SSH key (the usual setup). "
+                       "A password is only kept while the app is open.").grid(
+            row=6, column=0, columnspan=3, sticky="w", pady=(4, 0))
 
         data = ttk.LabelFrame(self, text="2. What to download", padding=8)
         data.grid(row=1, column=0, sticky="ew", pady=8)
@@ -111,9 +114,9 @@ class DownloadApp(ttk.Frame):
         self.rowconfigure(3, weight=1)
         ttk.Label(self, textvariable=self.status, anchor="w").grid(row=4, column=0, sticky="ew")
 
-    def _row(self, parent, row, label, var, browse=None) -> None:
+    def _row(self, parent, row, label, var, browse=None, show="") -> None:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
-        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, sticky="ew", pady=2)
+        ttk.Entry(parent, textvariable=var, show=show).grid(row=row, column=1, sticky="ew", pady=2)
         if browse:
             ttk.Button(parent, text="Browse…", command=browse).grid(row=row, column=2, padx=(4, 0))
 
@@ -139,7 +142,8 @@ class DownloadApp(ttk.Frame):
         opts = bd.DownloadOptions(
             user=self.user.get().strip(), server=self.server.get().strip(),
             remote_root=self.remote_root.get().strip(), prefixes=bd.normalize_prefixes(letters),
-            bbftp=self.bbftp.get().strip() or "bbftp", verbose=self.verbose.get(), ssh_batch=self.ssh_batch.get())
+            bbftp=self.bbftp.get().strip() or "bbftp", verbose=self.verbose.get(), ssh_batch=self.ssh_batch.get(),
+            password=self.password.get() or None)
         if not opts.user or not opts.server:
             raise ValueError("Username and server can't be empty.")
         return dates, dest, opts

@@ -14,12 +14,15 @@ it makes ``<dest>/<date>/`` and runs
 from __future__ import annotations
 
 import argparse
+import getpass
 import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -45,6 +48,28 @@ class DownloadOptions:
     verbose: bool = True
     ssh_batch: bool = True
     log_file: str | None = "bbftp_log.txt"
+    # Only for archives that use an SSH password instead of a key. Kept in
+    # memory and handed to ssh through SSH_ASKPASS; never written to disk.
+    password: str | None = field(default=None, repr=False)
+
+
+_ASKPASS_SCRIPT = '#!/bin/sh\nprintf \'%s\\n\' "$AO_BBFTP_PASSWORD"\n'
+
+
+def _askpass_env(password: str, workdir: str) -> dict[str, str]:
+    """Environment that makes ssh read ``password`` from a helper script.
+
+    The helper only echoes an environment variable, so the password itself
+    lives in the child process environment and not in any file.
+    """
+    helper = os.path.join(workdir, "askpass.sh")
+    with open(helper, "w", encoding="utf-8") as fh:
+        fh.write(_ASKPASS_SCRIPT)
+    os.chmod(helper, stat.S_IRWXU)
+    env = dict(os.environ)
+    env.update(AO_BBFTP_PASSWORD=password, SSH_ASKPASS=helper, SSH_ASKPASS_REQUIRE="force")
+    env.setdefault("DISPLAY", ":0")  # older ssh only uses SSH_ASKPASS when DISPLAY is set
+    return env
 
 
 @dataclass
@@ -117,7 +142,9 @@ def build_command(day: str, dest_root: str, opts: DownloadOptions) -> list[str]:
     cmd = [opts.bbftp]
     if opts.verbose:
         cmd.append("-V")
-    if opts.ssh_batch:
+    if opts.password:
+        cmd.append("-s")  # ssh mode that may ask for a password (-S never does)
+    elif opts.ssh_batch:
         cmd.append("-S")
     cmd += ["-u", opts.user,
             "-e", f"mget {remote_pattern(day, opts.prefixes, opts.remote_root)} {local}",
@@ -183,6 +210,8 @@ def run_downloads(
             log_fh.flush()
 
     results: list[DateResult] = []
+    askpass_dir = tempfile.TemporaryDirectory(prefix="ao_bbftp_") if opts.password else None
+    env = _askpass_env(opts.password, askpass_dir.name) if askpass_dir else None
     try:
         for day in dates:
             if stop_event and stop_event.is_set():
@@ -195,7 +224,7 @@ def run_downloads(
             emit(f"$ {format_command(cmd)}")
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                        stdin=subprocess.DEVNULL, text=True, bufsize=1,
+                                        stdin=subprocess.DEVNULL, text=True, bufsize=1, env=env,
                                         start_new_session=os.name == "posix")
             except FileNotFoundError:
                 emit(f"ERROR: could not find '{opts.bbftp}'. Is the bbftp client installed and on your PATH?")
@@ -234,6 +263,8 @@ def run_downloads(
     finally:
         if log_fh:
             log_fh.close()
+        if askpass_dir:
+            askpass_dir.cleanup()
     return results
 
 
@@ -248,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--bbftp", default="bbftp", help="path to the bbftp executable")
     p.add_argument("--no-ssh-batch", action="store_true", help="drop -S")
     p.add_argument("--quiet", action="store_true", help="drop -V")
+    p.add_argument("--ask-password", action="store_true",
+                   help="prompt for an SSH password (only if the archive doesn't use your SSH key)")
     p.add_argument("--dry-run", action="store_true", help="print the commands without running them")
     args = p.parse_args(argv)
 
@@ -258,6 +291,10 @@ def main(argv: list[str] | None = None) -> int:
                                verbose=not args.quiet, ssh_batch=not args.no_ssh_batch)
     except ValueError as e:
         p.error(str(e))
+    if args.ask_password:
+        # A dry run only needs to know a password is in play, so it can show -s.
+        opts.password = "(hidden)" if args.dry_run else (
+            getpass.getpass(f"Password for {opts.user}@{opts.server}: ") or None)
 
     if args.dry_run:
         for day in dates:
